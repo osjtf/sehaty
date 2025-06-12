@@ -359,7 +359,7 @@ if (trim($_POST['service_code_manual']) !== '') {
     $comp_name = $is_comp ? trim($_POST['companion_name']) : null;
     $comp_rel = $is_comp ? trim($_POST['companion_relation']) : null;
     $is_paid = isset($_POST['is_paid']) && $_POST['is_paid'] === '1' ? 1 : 0;
-    $payment_amount = $is_paid ? floatval($_POST['payment_amount']) : 0;
+    $payment_amount = isset($_POST['payment_amount']) ? floatval($_POST['payment_amount']) : 0;
 
     $created_at = date('Y-m-d H:i:s');
 
@@ -407,7 +407,7 @@ if (trim($_POST['service_code_manual']) !== '') {
     $comp_name = $is_comp ? trim($_POST['companion_name_edit']) : null;
     $comp_rel = $is_comp ? trim($_POST['companion_relation_edit']) : null;
     $is_paid = isset($_POST['is_paid_edit']) && $_POST['is_paid_edit'] === '1' ? 1 : 0;
-    $payment_amount = $is_paid ? floatval($_POST['payment_amount_edit']) : 0;
+    $payment_amount = isset($_POST['payment_amount_edit']) ? floatval($_POST['payment_amount_edit']) : 0;
 
     $updated_at = date('Y-m-d H:i:s');
 
@@ -577,7 +577,9 @@ $stats = [
   'doctors' => 0,
   'patients' => 0,
   'paid' => 0,
-  'unpaid' => 0
+  'unpaid' => 0,
+  'paid_amount' => 0,
+  'unpaid_amount' => 0
 ];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0");
 $stats['active'] = $res->fetch_assoc()['c'];
@@ -587,6 +589,10 @@ $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0 AN
 $stats['paid'] = $res->fetch_assoc()['c'];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0 AND is_paid=0");
 $stats['unpaid'] = $res->fetch_assoc()['c'];
+$res = $conn->query("SELECT IFNULL(SUM(payment_amount),0) AS amt FROM sick_leaves WHERE is_deleted=0 AND is_paid=1");
+$stats['paid_amount'] = $res->fetch_assoc()['amt'];
+$res = $conn->query("SELECT IFNULL(SUM(payment_amount),0) AS amt FROM sick_leaves WHERE is_deleted=0 AND is_paid=0");
+$stats['unpaid_amount'] = $res->fetch_assoc()['amt'];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves");
 $stats['total'] = $res->fetch_assoc()['c'];
 $res = $conn->query("SELECT COUNT(*) as c FROM doctors");
@@ -848,13 +854,14 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
     }
 
     .stats-box {
-      background: var(--primary-color);
+      background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
       color: #fff;
       border-radius: var(--border-radius);
       padding: 12px 6px;
       text-align: center;
       font-size: 1rem;
-      transition: background var(--transition-speed);
+      margin-bottom: 4px;
+      transition: opacity var(--transition-speed);
       animation: fadeIn 0.5s ease-in-out;
       box-shadow: 0 2px 6px var(--shadow-color);
     }
@@ -1043,6 +1050,8 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       <div class="col stats-box">الأطباء<br><?= $stats['doctors'] ?></div>
       <div class="col stats-box">مدفوعة<br><?= $stats['paid'] ?></div>
       <div class="col stats-box">غير مدفوعة<br><?= $stats['unpaid'] ?></div>
+      <div class="col stats-box">إجمالي المدفوعات<br><?= number_format($stats['paid_amount'],2) ?></div>
+      <div class="col stats-box">إجمالي غير المدفوعات<br><?= number_format($stats['unpaid_amount'],2) ?></div>
     </div>
 
     <!-- زر إشعارات المدفوعات -->
@@ -2985,15 +2994,18 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       const originalPaymentsRows = Array.from(document.querySelectorAll('#paymentsTable tbody tr'));
       document.getElementById('sortPaymentsPaid')?.addEventListener('click', () => {
         sortTable('paymentsTable', 5, false);
+        showAlert('success','تم الفرز: أعلى المدفوعات');
       });
       document.getElementById('sortPaymentsUnpaid')?.addEventListener('click', () => {
         sortTable('paymentsTable', 6, false);
+        showAlert('success','تم الفرز: أعلى غير المدفوعة');
       });
       document.getElementById('sortPaymentsReset')?.addEventListener('click', () => {
         const tbody = document.getElementById('paymentsTable').querySelector('tbody');
         tbody.innerHTML = '';
         originalPaymentsRows.forEach(r => tbody.appendChild(r));
         reIndexTable('paymentsTable');
+        showAlert('success','تم إعادة الترتيب الافتراضي للمدفوعات');
       });
 
       document.querySelectorAll('.btn-view-patient-leaves').forEach(btn => {
@@ -3100,6 +3112,9 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           row.style.display = show ? '' : 'none';
         });
         reIndexTable(tableId);
+        if(status === 'paid') showAlert('success','تمت الفلترة: المدفوعة فقط');
+        else if(status === 'unpaid') showAlert('success','تمت الفلترة: غير المدفوعة فقط');
+        else showAlert('success','تمت إعادة عرض الكل');
       }
 
       // ==== 42. تفعيل أزرار الفلترة والإعادة ====

@@ -494,9 +494,6 @@ if (trim($_POST['service_code_manual']) !== '') {
     $stmt->bind_param("is", $lid, $now);
     $stmt->execute();
     $stmt->close();
-    $svc = $conn->query("SELECT service_code FROM sick_leaves WHERE id=$lid")->fetch_assoc()['service_code'];
-    $msg = 'استعلام جديد للإجازة ' . $svc;
-    $conn->query("INSERT INTO notifications (type, leave_id, message, created_at) VALUES ('query',$lid,'$msg','$now')");
     $cntRes = $conn->query("SELECT COUNT(*) AS c FROM leave_queries WHERE leave_id=$lid");
     $newCount = $cntRes->fetch_assoc()['c'];
     echo json_encode(['success' => true, 'message' => 'تم تسجيل الاستعلام', 'new_count' => $newCount]);
@@ -560,6 +557,14 @@ if (trim($_POST['service_code_manual']) !== '') {
     exit;
   }
 
+  if ($action === 'fetch_notifications') {
+    $arr = [];
+    $res = $conn->query("SELECT id, message, created_at, leave_id FROM notifications WHERE type='payment' ORDER BY created_at DESC");
+    while ($row = $res->fetch_assoc()) { $arr[] = $row; }
+    echo json_encode(['success' => true, 'data' => $arr]);
+    exit;
+  }
+
   echo json_encode(['success' => false, 'message' => 'إجراء غير معروف']);
   exit;
 }
@@ -608,7 +613,8 @@ $res = $conn->query("SELECT p.id, p.name,
        COUNT(sl.id) AS total,
        SUM(CASE WHEN sl.is_paid=1 THEN 1 ELSE 0 END) AS paid_count,
        SUM(CASE WHEN sl.is_paid=0 THEN 1 ELSE 0 END) AS unpaid_count,
-       SUM(CASE WHEN sl.is_paid=1 THEN sl.payment_amount ELSE 0 END) AS paid_amount
+       IFNULL(SUM(CASE WHEN sl.is_paid=1 THEN sl.payment_amount ELSE 0 END),0) AS paid_amount,
+       IFNULL(SUM(CASE WHEN sl.is_paid=0 THEN sl.payment_amount ELSE 0 END),0) AS unpaid_amount
     FROM patients p
     LEFT JOIN sick_leaves sl ON sl.patient_id=p.id AND sl.is_deleted=0
     GROUP BY p.id ORDER BY p.name ASC");
@@ -674,11 +680,7 @@ while ($r = $res->fetch_assoc()) {
   }
 }
 
-// ==== 13. جلب الإشعارات ====
-$notifications_query = [];
-$res = $conn->query("SELECT id, message, created_at FROM notifications WHERE type='query' ORDER BY created_at DESC");
-while ($row = $res->fetch_assoc()) { $notifications_query[] = $row; }
-
+// ==== 13. جلب إشعارات المدفوعات ====
 $notifications_payment = [];
 $res = $conn->query("SELECT id, message, created_at, leave_id FROM notifications WHERE type='payment' ORDER BY created_at DESC");
 while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
@@ -1043,39 +1045,11 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       <div class="col stats-box">غير مدفوعة<br><?= $stats['unpaid'] ?></div>
     </div>
 
-    <!-- إشعارات -->
-    <div class="row g-2 mb-3">
-      <div class="col-md-6">
-        <h6>إشعارات الاستعلامات</h6>
-        <ul id="notifQueries" class="list-group">
-          <?php foreach ($notifications_query as $n): ?>
-            <li class="list-group-item d-flex justify-content-between align-items-center">
-              <?= htmlspecialchars($n['message']) ?>
-              <button class="btn btn-sm btn-danger btn-del-notif" data-id="<?= $n['id'] ?>">حذف</button>
-            </li>
-          <?php endforeach; ?>
-          <?php if (empty($notifications_query)): ?>
-            <li class="list-group-item">لا إشعارات</li>
-          <?php endif; ?>
-        </ul>
-      </div>
-      <div class="col-md-6">
-        <h6>إشعارات المدفوعات</h6>
-        <ul id="notifPayments" class="list-group">
-          <?php foreach ($notifications_payment as $n): ?>
-            <li class="list-group-item d-flex justify-content-between align-items-center" data-leave="<?= $n['leave_id'] ?>">
-              <?= htmlspecialchars($n['message']) ?>
-              <div>
-                <button class="btn btn-sm btn-success btn-pay-notif" data-leave="<?= $n['leave_id'] ?>">مدفوعة</button>
-                <button class="btn btn-sm btn-danger btn-del-notif" data-id="<?= $n['id'] ?>">حذف</button>
-              </div>
-            </li>
-          <?php endforeach; ?>
-          <?php if (empty($notifications_payment)): ?>
-            <li class="list-group-item">لا إشعارات</li>
-          <?php endif; ?>
-        </ul>
-      </div>
+    <!-- زر إشعارات المدفوعات -->
+    <div class="mb-3 text-end">
+      <button class="btn btn-gradient btn-sm" data-bs-toggle="modal" data-bs-target="#paymentNotifModal" id="btn-payment-notifs">
+        <i class="bi bi-bell"></i> إشعارات المدفوعات
+      </button>
     </div>
 
     <!-- أزرار الوصول السريع (الأطباء، المرضى، سجل الاستعلامات) -->
@@ -1277,6 +1251,11 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           <input type="text" id="searchLeaves" class="form-control" placeholder="ابحث برمز الخدمة أو المريض أو الطبيب">
           <button class="btn btn-primary" type="button" id="btn-search-leaves"><i class="bi bi-search"></i> بحث</button>
         </div>
+        <div class="mb-3 d-flex gap-2">
+          <button class="btn btn-success btn-sm" id="showPaidLeaves">مدفوعة فقط</button>
+          <button class="btn btn-warning btn-sm" id="showUnpaidLeaves">غير مدفوعة فقط</button>
+          <button class="btn btn-light btn-sm" id="showAllLeaves">الكل</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-striped table-hover text-center" id="leavesTable">
             <thead class="table-light">
@@ -1385,6 +1364,11 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           <button class="btn btn-primary" type="button" id="btn-search-archived"><i class="bi bi-search"></i>
             بحث</button>
         </div>
+        <div class="mb-3 d-flex gap-2">
+          <button class="btn btn-success btn-sm" id="showPaidArchived">مدفوعة فقط</button>
+          <button class="btn btn-warning btn-sm" id="showUnpaidArchived">غير مدفوعة فقط</button>
+          <button class="btn btn-light btn-sm" id="showAllArchived">الكل</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-bordered table-hover text-center" id="archivedTable">
             <thead class="table-light">
@@ -1451,6 +1435,59 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           </table>
         </div>
       </div>
+  </div>
+
+  <!-- نافذة إشعارات المدفوعات -->
+  <div class="modal fade" id="paymentNotifModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">إشعارات المدفوعات</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="إغلاق"></button>
+        </div>
+        <div class="modal-body">
+          <div class="d-flex justify-content-end mb-2">
+            <button class="btn btn-secondary btn-sm" id="refreshNotifs"><i class="bi bi-arrow-repeat"></i> تحديث</button>
+          </div>
+          <ul id="notifPayments" class="list-group">
+            <?php foreach ($notifications_payment as $n): ?>
+              <li class="list-group-item d-flex justify-content-between align-items-center" data-leave="<?= $n['leave_id'] ?>" data-id="<?= $n['id'] ?>">
+                <span><?= htmlspecialchars($n['message']) ?></span>
+                <div class="btn-group">
+                  <button class="btn btn-info btn-sm btn-view-leave" data-leave="<?= $n['leave_id'] ?>">تفاصيل</button>
+                  <button class="btn btn-success btn-sm btn-pay-notif" data-leave="<?= $n['leave_id'] ?>">مدفوعة</button>
+                  <button class="btn btn-danger btn-sm btn-del-notif" data-id="<?= $n['id'] ?>">حذف</button>
+                </div>
+              </li>
+            <?php endforeach; ?>
+            <?php if (empty($notifications_payment)): ?>
+              <li class="list-group-item">لا إشعارات</li>
+            <?php endif; ?>
+          </ul>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- نافذة تفاصيل الإجازة -->
+  <div class="modal fade" id="leaveDetailsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">تفاصيل الإجازة</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="إغلاق"></button>
+        </div>
+        <div class="modal-body" id="leaveDetailsContainer">
+          <p class="text-center">لا توجد بيانات</p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- قسم سجل الاستعلامات -->
@@ -1540,12 +1577,16 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       <div class="card-header d-flex justify-content-between align-items-center" style="background: var(--success-color); color:#fff; border-radius: var(--border-radius) var(--border-radius) 0 0;">
         <span class="fw-bold">إحصائيات المدفوعات</span>
         <div class="d-flex gap-2">
-          <button class="btn btn-light btn-sm" id="sortPaymentsNewest"><i class="bi bi-arrow-down-circle"></i> الأحدث</button>
-          <button class="btn btn-light btn-sm" id="sortPaymentsOldest"><i class="bi bi-arrow-up-circle"></i> الأقدم</button>
+          <button class="btn btn-light btn-sm" id="sortPaymentsPaid"><i class="bi bi-sort-down-alt"></i> أعلى المدفوعات</button>
+          <button class="btn btn-light btn-sm" id="sortPaymentsUnpaid"><i class="bi bi-sort-down-alt"></i> أعلى غير المدفوعة</button>
           <button class="btn btn-light btn-sm" id="sortPaymentsReset"><i class="bi bi-arrow-repeat"></i> افتراضي</button>
         </div>
       </div>
       <div class="card-body">
+        <div class="input-group mb-2">
+          <input type="text" id="searchPayments" class="form-control" placeholder="ابحث باسم المريض">
+          <button class="btn btn-primary" type="button" id="btn-search-payments"><i class="bi bi-search"></i> بحث</button>
+        </div>
         <div class="table-responsive">
           <table class="table table-bordered table-hover text-center" id="paymentsTable">
             <thead class="table-light">
@@ -1556,6 +1597,7 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
                 <th>مدفوعة</th>
                 <th>غير مدفوعة</th>
                 <th>إجمالي المدفوع</th>
+                <th>إجمالي غير المدفوع</th>
                 <th>عرض الإجازات</th>
               </tr>
             </thead>
@@ -1568,11 +1610,12 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
                 <td><?= $p['paid_count'] ?></td>
                 <td><?= $p['unpaid_count'] ?></td>
                 <td><?= number_format($p['paid_amount'], 2) ?></td>
+                <td><?= number_format($p['unpaid_amount'], 2) ?></td>
                 <td><button class="btn btn-info btn-sm btn-view-patient-leaves">عرض</button></td>
               </tr>
               <?php endforeach; ?>
               <?php if (empty($payments)): ?>
-                <tr class="no-results"><td colspan="7">لا بيانات</td></tr>
+                <tr class="no-results"><td colspan="8">لا بيانات</td></tr>
               <?php endif; ?>
             </tbody>
           </table>
@@ -2866,6 +2909,7 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       filterTable('leavesTable', 'searchLeaves', 'btn-search-leaves', [1, 2, 4]);
       filterTable('archivedTable', 'searchArchived', 'btn-search-archived', [1, 2, 4]);
       filterTable('queriesTable', 'searchQueries', 'btn-search-queries', [1, 2, 4]);
+      filterTable('paymentsTable', 'searchPayments', 'btn-search-payments', [1]);
 
       // ==== 39. الفرز حسب الأحدث/الأقدم/إعادة الترتيب الإفتراضي ==== 
       // نحتفظ بالصفوف الأصلية لكل جدول
@@ -2939,11 +2983,11 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       });
 
       const originalPaymentsRows = Array.from(document.querySelectorAll('#paymentsTable tbody tr'));
-      document.getElementById('sortPaymentsNewest')?.addEventListener('click', () => {
-        sortTable('paymentsTable', 0, false);
+      document.getElementById('sortPaymentsPaid')?.addEventListener('click', () => {
+        sortTable('paymentsTable', 5, false);
       });
-      document.getElementById('sortPaymentsOldest')?.addEventListener('click', () => {
-        sortTable('paymentsTable', 0, true);
+      document.getElementById('sortPaymentsUnpaid')?.addEventListener('click', () => {
+        sortTable('paymentsTable', 6, false);
       });
       document.getElementById('sortPaymentsReset')?.addEventListener('click', () => {
         const tbody = document.getElementById('paymentsTable').querySelector('tbody');
@@ -3032,6 +3076,32 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
         showAlert('success', 'تمت إعادة عرض كافة البيانات');
       }
 
+      const leaveDetailsModal = new bootstrap.Modal(document.getElementById('leaveDetailsModal'));
+      function showLeaveDetails(id){
+        const row = document.querySelector(`#leavesTable tr[data-id="${id}"]`) || document.querySelector(`#archivedTable tr[data-id="${id}"]`);
+        if(!row) return;
+        const table = row.closest('table');
+        const headers = Array.from(table.querySelectorAll('thead th')).map(th => th.textContent);
+        let html = '<div class="table-responsive"><table class="table table-bordered text-center"><thead><tr>';
+        headers.forEach(h=>{ html += `<th>${h}</th>`; });
+        html += '</tr></thead><tbody><tr>';
+        Array.from(row.children).forEach(td => { html += `<td>${td.innerHTML}</td>`; });
+        html += '</tr></tbody></table></div>';
+        document.getElementById('leaveDetailsContainer').innerHTML = html;
+        leaveDetailsModal.show();
+      }
+
+      function filterPaid(tableId, colIdx, status) {
+        document.querySelectorAll(`#${tableId} tbody tr[data-id]`).forEach(row => {
+          const val = row.children[colIdx].textContent.trim();
+          let show = true;
+          if (status === 'paid') show = val === 'نعم';
+          else if (status === 'unpaid') show = val === 'لا';
+          row.style.display = show ? '' : 'none';
+        });
+        reIndexTable(tableId);
+      }
+
       // ==== 42. تفعيل أزرار الفلترة والإعادة ====
       // فلترة الإجازات النشطة
       document.getElementById('btn-filter-dates').addEventListener('click', () => {
@@ -3039,6 +3109,16 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       });
       document.getElementById('btn-reset-dates').addEventListener('click', () => {
         resetDateFilter('leavesTable', originalLeavesRows, 'filter_from_date', 'filter_to_date');
+      });
+
+      document.getElementById('showPaidLeaves').addEventListener('click', () => {
+        filterPaid('leavesTable', 13, 'paid');
+      });
+      document.getElementById('showUnpaidLeaves').addEventListener('click', () => {
+        filterPaid('leavesTable', 13, 'unpaid');
+      });
+      document.getElementById('showAllLeaves').addEventListener('click', () => {
+        filterPaid('leavesTable', 13, null);
       });
 
       // فلترة الأرشيف
@@ -3049,6 +3129,16 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
         resetDateFilter('archivedTable', originalArchivedRows, 'filter_arch_from_date', 'filter_arch_to_date');
       });
 
+      document.getElementById('showPaidArchived').addEventListener('click', () => {
+        filterPaid('archivedTable', 13, 'paid');
+      });
+      document.getElementById('showUnpaidArchived').addEventListener('click', () => {
+        filterPaid('archivedTable', 13, 'unpaid');
+      });
+      document.getElementById('showAllArchived').addEventListener('click', () => {
+        filterPaid('archivedTable', 13, null);
+      });
+
       // فلترة سجل الاستعلامات
       document.getElementById('btn-filter-queries-dates').addEventListener('click', () => {
         filterDate('queriesTable', 'cell-queried', 'filter_q_from_date', 'filter_q_to_date');
@@ -3057,26 +3147,56 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
         resetDateFilter('queriesTable', originalQueriesRows, 'filter_q_from_date', 'filter_q_to_date');
       });
 
-      document.querySelectorAll('.btn-del-notif').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const id = btn.getAttribute('data-id');
-          const fd = new FormData();
-          fd.append('action', 'delete_notification');
-          fd.append('notification_id', id);
-          fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
-          fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.parentElement.remove(); }});
+      function attachNotifHandlers(){
+        document.querySelectorAll('#notifPayments .btn-del-notif').forEach(btn => {
+          btn.onclick = () => {
+            const id = btn.getAttribute('data-id');
+            const fd = new FormData();
+            fd.append('action', 'delete_notification');
+            fd.append('notification_id', id);
+            fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
+            fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.closest('li').remove(); }});
+          };
         });
-      });
+        document.querySelectorAll('#notifPayments .btn-pay-notif').forEach(btn => {
+          btn.onclick = () => {
+            const lid = btn.getAttribute('data-leave');
+            const fd = new FormData();
+            fd.append('action', 'mark_leave_paid');
+            fd.append('leave_id', lid);
+            fd.append('amount', 0);
+            fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
+            fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.closest('li').remove(); }});
+          };
+        });
+        document.querySelectorAll('#notifPayments .btn-view-leave').forEach(btn => {
+          btn.onclick = () => {
+            const id = btn.getAttribute('data-leave');
+            showLeaveDetails(id);
+          };
+        });
+      }
+      attachNotifHandlers();
 
-      document.querySelectorAll('.btn-pay-notif').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const lid = btn.getAttribute('data-leave');
-          const fd = new FormData();
-          fd.append('action', 'mark_leave_paid');
-          fd.append('leave_id', lid);
-          fd.append('amount', 0);
-          fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
-          fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.closest('li').remove(); }});
+      document.getElementById('refreshNotifs').addEventListener('click', () => {
+        const fd = new FormData();
+        fd.append('action','fetch_notifications');
+        fd.append('csrf_token','<?= $_SESSION["csrf_token"] ?>');
+        fetch('',{method:'POST',body:fd}).then(r=>r.json()).then(res=>{
+          if(res.success){
+            const ul = document.getElementById('notifPayments');
+            ul.innerHTML = '';
+            if(res.data.length===0){ ul.innerHTML = '<li class="list-group-item">لا إشعارات</li>'; }
+            res.data.forEach(n=>{
+              const li = document.createElement('li');
+              li.className = 'list-group-item d-flex justify-content-between align-items-center';
+              li.setAttribute('data-leave', n.leave_id);
+              li.setAttribute('data-id', n.id);
+              li.innerHTML = `<span>${n.message}</span><div class="btn-group"><button class="btn btn-info btn-sm btn-view-leave" data-leave="${n.leave_id}">تفاصيل</button><button class="btn btn-success btn-sm btn-pay-notif" data-leave="${n.leave_id}">مدفوعة</button><button class="btn btn-danger btn-sm btn-del-notif" data-id="${n.id}">حذف</button></div>`;
+              ul.appendChild(li);
+            });
+            attachNotifHandlers();
+          }
         });
       });
 

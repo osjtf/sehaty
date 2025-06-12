@@ -90,6 +90,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS sick_leaves (
   is_companion TINYINT(1) NOT NULL DEFAULT 0,
   companion_name VARCHAR(100) DEFAULT NULL,
   companion_relation VARCHAR(100) DEFAULT NULL,
+  is_paid TINYINT(1) NOT NULL DEFAULT 0,
+  payment_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
   created_at DATETIME NOT NULL,
   updated_at DATETIME DEFAULT NULL,
   deleted_at DATETIME DEFAULT NULL,
@@ -103,6 +105,17 @@ $conn->query("CREATE TABLE IF NOT EXISTS leave_queries (
   leave_id INT NOT NULL,
   queried_at DATETIME NOT NULL,
   source VARCHAR(20) NOT NULL DEFAULT 'external',
+  FOREIGN KEY(leave_id) REFERENCES sick_leaves(id) ON DELETE CASCADE
+) ENGINE=InnoDB CHARSET=utf8mb4");
+
+$conn->query("CREATE TABLE IF NOT EXISTS notifications (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  type ENUM('query','payment') NOT NULL,
+  leave_id INT DEFAULT NULL,
+  message VARCHAR(255) NOT NULL,
+  created_at DATETIME NOT NULL,
+  remind_at DATETIME DEFAULT NULL,
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
   FOREIGN KEY(leave_id) REFERENCES sick_leaves(id) ON DELETE CASCADE
 ) ENGINE=InnoDB CHARSET=utf8mb4");
 
@@ -345,20 +358,23 @@ if (trim($_POST['service_code_manual']) !== '') {
     $is_comp = isset($_POST['is_companion']) && $_POST['is_companion'] === '1' ? 1 : 0;
     $comp_name = $is_comp ? trim($_POST['companion_name']) : null;
     $comp_rel = $is_comp ? trim($_POST['companion_relation']) : null;
+    $is_paid = isset($_POST['is_paid']) && $_POST['is_paid'] === '1' ? 1 : 0;
+    $payment_amount = $is_paid ? floatval($_POST['payment_amount']) : 0;
 
     $created_at = date('Y-m-d H:i:s');
 
-    $stmt = $conn->prepare("INSERT INTO sick_leaves 
-      (service_code, patient_id, doctor_id, issue_date, start_date, end_date, days_count, is_companion, companion_name, companion_relation, created_at) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    $stmt->bind_param("siisssiisss",
-      $service_code, $pid, $did, $issue_date, $start, $end, $days_count, $is_comp, $comp_name, $comp_rel, $created_at);
+    $stmt = $conn->prepare("INSERT INTO sick_leaves
+      (service_code, patient_id, doctor_id, issue_date, start_date, end_date, days_count, is_companion, companion_name, companion_relation, is_paid, payment_amount, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $stmt->bind_param("siisssiissids",
+      $service_code, $pid, $did, $issue_date, $start, $end, $days_count, $is_comp, $comp_name, $comp_rel, $is_paid, $payment_amount, $created_at);
     $stmt->execute();
     $new_id = $stmt->insert_id;
     $stmt->close();
 
-    $lv = $conn->query("SELECT sl.id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count, 
+    $lv = $conn->query("SELECT sl.id, sl.patient_id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count,
                                sl.is_companion, sl.companion_name, sl.companion_relation,
+                               sl.is_paid, sl.payment_amount,
                                DATE_FORMAT(sl.created_at, '%Y-%m-%d %r') AS created_at,
                                p.name AS patient_name, p.identity_number, d.name AS doctor_name, d.title AS doctor_title,
                                (SELECT COUNT(*) FROM leave_queries WHERE leave_id=sl.id) AS queries_count
@@ -390,6 +406,8 @@ if (trim($_POST['service_code_manual']) !== '') {
     $is_comp = isset($_POST['is_companion_edit']) && $_POST['is_companion_edit'] === '1' ? 1 : 0;
     $comp_name = $is_comp ? trim($_POST['companion_name_edit']) : null;
     $comp_rel = $is_comp ? trim($_POST['companion_relation_edit']) : null;
+    $is_paid = isset($_POST['is_paid_edit']) && $_POST['is_paid_edit'] === '1' ? 1 : 0;
+    $payment_amount = $is_paid ? floatval($_POST['payment_amount_edit']) : 0;
 
     $updated_at = date('Y-m-d H:i:s');
 
@@ -406,20 +424,22 @@ if (trim($_POST['service_code_manual']) !== '') {
     }
 
     // هنا أصلحنا bind_param ليكون "ssssiisssi" بدون مسافات
-    $stmt = $conn->prepare("UPDATE sick_leaves SET 
-      service_code=?, issue_date=?, start_date=?, end_date=?, days_count=?, is_companion=?, companion_name=?, companion_relation=?, updated_at=?
+    $stmt = $conn->prepare("UPDATE sick_leaves SET
+      service_code=?, issue_date=?, start_date=?, end_date=?, days_count=?, is_companion=?, companion_name=?, companion_relation=?, is_paid=?, payment_amount=?, updated_at=?
       WHERE id=?");
-    $stmt->bind_param("ssssiisssi",
+    $stmt->bind_param("ssssiissidsi",
       $service_code, $issue_date, $start, $end,
       $days_count, $is_comp,
       $comp_name, $comp_rel,
+      $is_paid, $payment_amount,
       $updated_at, $lid
     );
     $stmt->execute();
     $stmt->close();
 
-    $lv = $conn->query("SELECT sl.id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count, 
+    $lv = $conn->query("SELECT sl.id, sl.patient_id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count,
                                sl.is_companion, sl.companion_name, sl.companion_relation,
+                               sl.is_paid, sl.payment_amount,
                                DATE_FORMAT(sl.updated_at, '%Y-%m-%d %r') AS updated_at,
                                p.name AS patient_name, p.identity_number, d.name AS doctor_name, d.title AS doctor_title,
                                (SELECT COUNT(*) FROM leave_queries WHERE leave_id=sl.id) AS queries_count
@@ -474,6 +494,9 @@ if (trim($_POST['service_code_manual']) !== '') {
     $stmt->bind_param("is", $lid, $now);
     $stmt->execute();
     $stmt->close();
+    $svc = $conn->query("SELECT service_code FROM sick_leaves WHERE id=$lid")->fetch_assoc()['service_code'];
+    $msg = 'استعلام جديد للإجازة ' . $svc;
+    $conn->query("INSERT INTO notifications (type, leave_id, message, created_at) VALUES ('query',$lid,'$msg','$now')");
     $cntRes = $conn->query("SELECT COUNT(*) AS c FROM leave_queries WHERE leave_id=$lid");
     $newCount = $cntRes->fetch_assoc()['c'];
     echo json_encode(['success' => true, 'message' => 'تم تسجيل الاستعلام', 'new_count' => $newCount]);
@@ -499,8 +522,8 @@ if (trim($_POST['service_code_manual']) !== '') {
   if ($action === 'fetch_queries') {
     $lid = intval($_POST['leave_id']);
     $stmt = $conn->prepare("SELECT id, DATE_FORMAT(DATE_ADD(queried_at, INTERVAL 3 HOUR), '%Y-%m-%d %r') AS queried_at
-                             FROM leave_queries 
-                             WHERE leave_id=? 
+                             FROM leave_queries
+                             WHERE leave_id=?
                              ORDER BY queried_at DESC");
     $stmt->bind_param("i", $lid);
     $stmt->execute();
@@ -514,6 +537,29 @@ if (trim($_POST['service_code_manual']) !== '') {
     exit;
   }
 
+  if ($action === 'delete_notification') {
+    $nid = intval($_POST['notification_id']);
+    $conn->query("DELETE FROM notifications WHERE id=$nid");
+    echo json_encode(['success' => true]);
+    exit;
+  }
+
+  if ($action === 'delete_all_notifications') {
+    $type = $conn->real_escape_string($_POST['n_type']);
+    $conn->query("DELETE FROM notifications WHERE type='$type'");
+    echo json_encode(['success' => true]);
+    exit;
+  }
+
+  if ($action === 'mark_leave_paid') {
+    $lid = intval($_POST['leave_id']);
+    $amount = floatval($_POST['amount']);
+    $conn->query("UPDATE sick_leaves SET is_paid=1, payment_amount=$amount WHERE id=$lid");
+    $conn->query("DELETE FROM notifications WHERE type='payment' AND leave_id=$lid");
+    echo json_encode(['success' => true]);
+    exit;
+  }
+
   echo json_encode(['success' => false, 'message' => 'إجراء غير معروف']);
   exit;
 }
@@ -524,12 +570,18 @@ $stats = [
   'active' => 0,
   'archived' => 0,
   'doctors' => 0,
-  'patients' => 0
+  'patients' => 0,
+  'paid' => 0,
+  'unpaid' => 0
 ];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0");
 $stats['active'] = $res->fetch_assoc()['c'];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=1");
 $stats['archived'] = $res->fetch_assoc()['c'];
+$res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0 AND is_paid=1");
+$stats['paid'] = $res->fetch_assoc()['c'];
+$res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves WHERE is_deleted=0 AND is_paid=0");
+$stats['unpaid'] = $res->fetch_assoc()['c'];
 $res = $conn->query("SELECT COUNT(*) as c FROM sick_leaves");
 $stats['total'] = $res->fetch_assoc()['c'];
 $res = $conn->query("SELECT COUNT(*) as c FROM doctors");
@@ -550,10 +602,25 @@ while ($row = $res->fetch_assoc()) {
   $doctors[] = $row;
 }
 
+// ==== 8.1 إحصائيات المدفوعات لكل مريض ====
+$payments = [];
+$res = $conn->query("SELECT p.id, p.name,
+       COUNT(sl.id) AS total,
+       SUM(CASE WHEN sl.is_paid=1 THEN 1 ELSE 0 END) AS paid_count,
+       SUM(CASE WHEN sl.is_paid=0 THEN 1 ELSE 0 END) AS unpaid_count,
+       SUM(CASE WHEN sl.is_paid=1 THEN sl.payment_amount ELSE 0 END) AS paid_amount
+    FROM patients p
+    LEFT JOIN sick_leaves sl ON sl.patient_id=p.id AND sl.is_deleted=0
+    GROUP BY p.id ORDER BY p.name ASC");
+while ($row = $res->fetch_assoc()) {
+  $payments[] = $row;
+}
+
 // ==== 9. جلب بيانات الإجازات النشطة (للجدول الرئيسي) ====
 $leaves = [];
-$res = $conn->query("SELECT sl.id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count, 
+$res = $conn->query("SELECT sl.id, sl.patient_id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count,
                              sl.is_companion, sl.companion_name, sl.companion_relation,
+                             sl.is_paid, sl.payment_amount,
                              DATE_FORMAT(sl.created_at, '%Y-%m-%d %r') AS created_at,
                              p.name AS patient_name, p.identity_number, d.name AS doctor_name, d.title AS doctor_title,
                              (SELECT COUNT(*) FROM leave_queries WHERE leave_id=sl.id) AS queries_count
@@ -568,8 +635,9 @@ while ($row = $res->fetch_assoc()) {
 
 // ==== 10. جلب بيانات الأرشيف (الإجازات المحذوفة) ====
 $archived = [];
-$res = $conn->query("SELECT sl.id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count, 
+$res = $conn->query("SELECT sl.id, sl.patient_id, sl.service_code, sl.issue_date, sl.start_date, sl.end_date, sl.days_count,
                              sl.is_companion, sl.companion_name, sl.companion_relation,
+                             sl.is_paid, sl.payment_amount,
                              DATE_FORMAT(sl.deleted_at, '%Y-%m-%d %r') AS deleted_at,
                              p.name AS patient_name, p.identity_number, d.name AS doctor_name, d.title AS doctor_title,
                              (SELECT COUNT(*) FROM leave_queries WHERE leave_id=sl.id) AS queries_count
@@ -593,6 +661,27 @@ $res = $conn->query("SELECT lq.id AS qid, lq.leave_id, sl.service_code, p.name A
 while ($row = $res->fetch_assoc()) {
   $queries[] = $row;
 }
+
+// ==== 12. فحص الإجازات غير المدفوعة وإنشاء إشعار عند الحاجة ====
+$res = $conn->query("SELECT id, service_code, created_at FROM sick_leaves WHERE is_paid=0 AND is_deleted=0");
+$now = time();
+while ($r = $res->fetch_assoc()) {
+  if (strtotime($r['created_at']) < $now - 300) {
+    $svc = $r['service_code'];
+    $lid = $r['id'];
+    $msg = 'إجازة غير مدفوعة ' . $svc;
+    $conn->query("INSERT INTO notifications (type, leave_id, message, created_at) SELECT 'payment',$lid,'$msg',NOW() FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM notifications WHERE type='payment' AND leave_id=$lid)");
+  }
+}
+
+// ==== 13. جلب الإشعارات ====
+$notifications_query = [];
+$res = $conn->query("SELECT id, message, created_at FROM notifications WHERE type='query' ORDER BY created_at DESC");
+while ($row = $res->fetch_assoc()) { $notifications_query[] = $row; }
+
+$notifications_payment = [];
+$res = $conn->query("SELECT id, message, created_at, leave_id FROM notifications WHERE type='payment' ORDER BY created_at DESC");
+while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
 ?>
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -950,6 +1039,43 @@ while ($row = $res->fetch_assoc()) {
       <div class="col stats-box">أرشيف<br><?= $stats['archived'] ?></div>
       <div class="col stats-box">المرضى<br><?= $stats['patients'] ?></div>
       <div class="col stats-box">الأطباء<br><?= $stats['doctors'] ?></div>
+      <div class="col stats-box">مدفوعة<br><?= $stats['paid'] ?></div>
+      <div class="col stats-box">غير مدفوعة<br><?= $stats['unpaid'] ?></div>
+    </div>
+
+    <!-- إشعارات -->
+    <div class="row g-2 mb-3">
+      <div class="col-md-6">
+        <h6>إشعارات الاستعلامات</h6>
+        <ul id="notifQueries" class="list-group">
+          <?php foreach ($notifications_query as $n): ?>
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <?= htmlspecialchars($n['message']) ?>
+              <button class="btn btn-sm btn-danger btn-del-notif" data-id="<?= $n['id'] ?>">حذف</button>
+            </li>
+          <?php endforeach; ?>
+          <?php if (empty($notifications_query)): ?>
+            <li class="list-group-item">لا إشعارات</li>
+          <?php endif; ?>
+        </ul>
+      </div>
+      <div class="col-md-6">
+        <h6>إشعارات المدفوعات</h6>
+        <ul id="notifPayments" class="list-group">
+          <?php foreach ($notifications_payment as $n): ?>
+            <li class="list-group-item d-flex justify-content-between align-items-center" data-leave="<?= $n['leave_id'] ?>">
+              <?= htmlspecialchars($n['message']) ?>
+              <div>
+                <button class="btn btn-sm btn-success btn-pay-notif" data-leave="<?= $n['leave_id'] ?>">مدفوعة</button>
+                <button class="btn btn-sm btn-danger btn-del-notif" data-id="<?= $n['id'] ?>">حذف</button>
+              </div>
+            </li>
+          <?php endforeach; ?>
+          <?php if (empty($notifications_payment)): ?>
+            <li class="list-group-item">لا إشعارات</li>
+          <?php endif; ?>
+        </ul>
+      </div>
     </div>
 
     <!-- أزرار الوصول السريع (الأطباء، المرضى، سجل الاستعلامات) -->
@@ -962,6 +1088,9 @@ while ($row = $res->fetch_assoc()) {
       </button>
       <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#queriesSection">
         <i class="bi bi-journal-text"></i> سجل الاستعلامات
+      </button>
+      <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#paymentsSection">
+        <i class="bi bi-cash"></i> المدفوعات
       </button>
     </div>
 
@@ -1093,6 +1222,17 @@ while ($row = $res->fetch_assoc()) {
           <div class="invalid-feedback">أدخل صلة القرابة.</div>
         </div>
 
+        <div class="col-md-2">
+          <div class="form-check mt-4">
+            <input class="form-check-input" type="checkbox" name="is_paid" id="is_paid" value="1">
+            <label class="form-check-label" for="is_paid">مدفوعة</label>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label>المبلغ</label>
+          <input type="number" step="0.01" name="payment_amount" id="payment_amount" class="form-control" value="0">
+        </div>
+
         <div class="col-12 text-center mt-3">
           <button type="submit" class="btn btn-gradient w-100">
             <i class="bi bi-plus-circle"></i> إضافة الإجازة
@@ -1154,12 +1294,14 @@ while ($row = $res->fetch_assoc()) {
                 <th>نوع الإجازة</th>
                 <th>عدد الاستعلامات</th>
                 <th>تاريخ الإضافة</th>
+                <th>مدفوعة؟</th>
+                <th>المبلغ</th>
                 <th style="min-width:300px;">تحكم</th>
               </tr>
             </thead>
             <tbody>
               <?php foreach ($leaves as $idx => $lv): ?>
-                <tr data-id="<?= $lv['id'] ?>"
+                <tr data-id="<?= $lv['id'] ?>" data-patient="<?= $lv['patient_id'] ?>"
                     data-comp-name="<?= htmlspecialchars($lv['companion_name']) ?>"
                     data-comp-rel="<?= htmlspecialchars($lv['companion_relation']) ?>">
                   <td class="row-num"></td>
@@ -1179,6 +1321,8 @@ while ($row = $res->fetch_assoc()) {
                   </td>
                   <td class="cell-queries-count"><?= $lv['queries_count'] ?></td>
                   <td class="cell-created"><?= htmlspecialchars($lv['created_at']) ?></td>
+                  <td><?= $lv['is_paid'] ? 'نعم' : 'لا' ?></td>
+                  <td><?= number_format($lv['payment_amount'], 2) ?></td>
                   <td>
                     <button class="btn btn-info btn-sm action-btn btn-edit-leave"><i class="bi bi-pencil-square"></i>
                       تعديل</button>
@@ -1191,7 +1335,7 @@ while ($row = $res->fetch_assoc()) {
               <?php endforeach; ?>
               <?php if (empty($leaves)): ?>
                 <tr class="no-results">
-                  <td colspan="14">لا توجد إجازات نشطة حاليًا.</td>
+                  <td colspan="16">لا توجد إجازات نشطة حاليًا.</td>
                 </tr>
               <?php endif; ?>
             </tbody>
@@ -1258,17 +1402,19 @@ while ($row = $res->fetch_assoc()) {
                 <th>نوع الإجازة</th>
                 <th>عدد الاستعلامات</th>
                 <th>تاريخ الحذف</th>
+                <th>مدفوعة؟</th>
+                <th>المبلغ</th>
                 <th style="min-width:260px;">تحكم</th>
               </tr>
             </thead>
             <tbody>
               <?php if (empty($archived)): ?>
                 <tr class="no-results">
-                  <td colspan="14">لا توجد إجازات في الأرشيف.</td>
+                  <td colspan="16">لا توجد إجازات في الأرشيف.</td>
                 </tr>
               <?php else: ?>
                 <?php foreach ($archived as $idx => $lv): ?>
-                  <tr data-id="<?= $lv['id'] ?>"
+                  <tr data-id="<?= $lv['id'] ?>" data-patient="<?= $lv['patient_id'] ?>"
                       data-comp-name="<?= htmlspecialchars($lv['companion_name']) ?>"
                       data-comp-rel="<?= htmlspecialchars($lv['companion_relation']) ?>">
                     <td class="row-num"></td>
@@ -1287,7 +1433,9 @@ while ($row = $res->fetch_assoc()) {
                         : '<span class="badge bg-info text-dark">أساسي</span>' ?>
                     </td>
                     <td class="cell-queries-count"><?= $lv['queries_count'] ?></td>
-                    <td class="cell-deleted"><?= htmlspecialchars($lv['deleted_at']) ?></td>
+                   <td class="cell-deleted"><?= htmlspecialchars($lv['deleted_at']) ?></td>
+                    <td><?= $lv['is_paid'] ? 'نعم' : 'لا' ?></td>
+                    <td><?= number_format($lv['payment_amount'], 2) ?></td>
                     <td>
                       <button class="btn btn-success btn-sm action-btn btn-restore-leave"><i
                           class="bi bi-arrow-counterclockwise"></i> استعادة</button>
@@ -1303,9 +1451,9 @@ while ($row = $res->fetch_assoc()) {
           </table>
         </div>
       </div>
-    </div>
+  </div>
 
-    <!-- قسم سجل الاستعلامات -->
+  <!-- قسم سجل الاستعلامات -->
     <div class="collapse" id="queriesSection">
       <div class="card card-custom mt-4 mb-5">
         <div class="card-header d-flex justify-content-between align-items-center"
@@ -1383,10 +1531,57 @@ while ($row = $res->fetch_assoc()) {
             </table>
           </div>
         </div>
+  </div>
+  </div>
+
+  <!-- قسم المدفوعات -->
+  <div class="collapse" id="paymentsSection">
+    <div class="card card-custom mt-4 mb-5">
+      <div class="card-header d-flex justify-content-between align-items-center" style="background: var(--success-color); color:#fff; border-radius: var(--border-radius) var(--border-radius) 0 0;">
+        <span class="fw-bold">إحصائيات المدفوعات</span>
+        <div class="d-flex gap-2">
+          <button class="btn btn-light btn-sm" id="sortPaymentsNewest"><i class="bi bi-arrow-down-circle"></i> الأحدث</button>
+          <button class="btn btn-light btn-sm" id="sortPaymentsOldest"><i class="bi bi-arrow-up-circle"></i> الأقدم</button>
+          <button class="btn btn-light btn-sm" id="sortPaymentsReset"><i class="bi bi-arrow-repeat"></i> افتراضي</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="table-responsive">
+          <table class="table table-bordered table-hover text-center" id="paymentsTable">
+            <thead class="table-light">
+              <tr>
+                <th>رقم</th>
+                <th>المريض</th>
+                <th>الإجازات الكلية</th>
+                <th>مدفوعة</th>
+                <th>غير مدفوعة</th>
+                <th>إجمالي المدفوع</th>
+                <th>عرض الإجازات</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($payments as $idx => $p): ?>
+              <tr data-id="<?= $p['id'] ?>">
+                <td class="row-num"></td>
+                <td><?= htmlspecialchars($p['name']) ?></td>
+                <td><?= $p['total'] ?></td>
+                <td><?= $p['paid_count'] ?></td>
+                <td><?= $p['unpaid_count'] ?></td>
+                <td><?= number_format($p['paid_amount'], 2) ?></td>
+                <td><button class="btn btn-info btn-sm btn-view-patient-leaves">عرض</button></td>
+              </tr>
+              <?php endforeach; ?>
+              <?php if (empty($payments)): ?>
+                <tr class="no-results"><td colspan="7">لا بيانات</td></tr>
+              <?php endif; ?>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
+  </div>
 
-    <!-- نافذة إدارة الأطباء -->
+  <!-- نافذة إدارة الأطباء -->
     <div class="modal fade" id="doctorsModal" tabindex="-1">
       <div class="modal-dialog modal-lg modal-dialog-centered">
         <div class="modal-content p-3">
@@ -1580,10 +1775,21 @@ while ($row = $res->fetch_assoc()) {
               <input type="text" name="companion_name_edit" id="companion_name_edit" class="form-control">
               <div class="invalid-feedback">أدخل اسم المرافق.</div>
             </div>
-            <div class="col-md-3 mt-2 companion-fields-edit hidden-field">
-              <label>صلة القرابة</label>
-              <input type="text" name="companion_relation_edit" id="companion_relation_edit" class="form-control">
-              <div class="invalid-feedback">أدخل صلة القرابة.</div>
+           <div class="col-md-3 mt-2 companion-fields-edit hidden-field">
+             <label>صلة القرابة</label>
+             <input type="text" name="companion_relation_edit" id="companion_relation_edit" class="form-control">
+             <div class="invalid-feedback">أدخل صلة القرابة.</div>
+           </div>
+
+            <div class="col-md-2">
+              <div class="form-check mt-4">
+                <input class="form-check-input" type="checkbox" name="is_paid_edit" id="is_paid_edit" value="1">
+                <label class="form-check-label" for="is_paid_edit">مدفوعة</label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label>المبلغ</label>
+              <input type="number" step="0.01" name="payment_amount_edit" id="payment_amount_edit" class="form-control" value="0">
             </div>
             <div class="col-12 text-center mt-3 d-flex gap-2">
               <button type="submit" class="btn btn-success-custom w-50"><i class="bi bi-save-fill"></i> حفظ
@@ -2172,6 +2378,7 @@ while ($row = $res->fetch_assoc()) {
               if (noRow) noRow.remove();
               const newRow = document.createElement('tr');
               newRow.setAttribute('data-id', lv.id);
+              newRow.setAttribute('data-patient', lv.patient_id);
               newRow.setAttribute('data-comp-name', lv.companion_name);
               newRow.setAttribute('data-comp-rel', lv.companion_relation);
               newRow.innerHTML = `
@@ -2188,6 +2395,8 @@ while ($row = $res->fetch_assoc()) {
                 <td>${lv.is_companion ? '<span class="badge bg-warning text-dark">مرافق</span>' : '<span class="badge bg-info text-dark">أساسي</span>'}</td>
                 <td class="cell-queries-count">${lv.queries_count}</td>
                 <td class="cell-created">${lv.created_at}</td>
+                <td>${lv.is_paid ? 'نعم' : 'لا'}</td>
+                <td>${parseFloat(lv.payment_amount).toFixed(2)}</td>
                 <td>
                   <button class="btn btn-info btn-sm action-btn btn-edit-leave"><i class="bi bi-pencil-square"></i> تعديل</button>
                   <button class="btn btn-danger btn-sm action-btn btn-delete-leave"><i class="bi bi-trash-fill"></i> أرشفة</button>
@@ -2436,7 +2645,10 @@ while ($row = $res->fetch_assoc()) {
         document.getElementById('doctor_edit').value = cells[4].textContent.trim();
         document.getElementById('start_date_edit').value = cells[7].textContent.trim();
         document.getElementById('end_date_edit').value = cells[8].textContent.trim();
-        document.getElementById('days_count_edit').value = cells[9].textContent.trim();
+       document.getElementById('days_count_edit').value = cells[9].textContent.trim();
+
+        document.getElementById('is_paid_edit').checked = cells[13].textContent.trim() === 'نعم';
+        document.getElementById('payment_amount_edit').value = cells[14].textContent.trim();
 
         // تعبئة بيانات المرافق في التعديل
         const isCBox = document.getElementById('is_companion_edit');
@@ -2533,6 +2745,8 @@ while ($row = $res->fetch_assoc()) {
                   row.setAttribute('data-comp-name', '');
                   row.setAttribute('data-comp-rel', '');
                 }
+                row.children[13].textContent = lv.is_paid ? 'نعم' : 'لا';
+                row.children[14].textContent = parseFloat(lv.payment_amount).toFixed(2);
               }
               editLeaveModal.hide();
               reIndexTable('leavesTable');
@@ -2724,6 +2938,31 @@ while ($row = $res->fetch_assoc()) {
         showAlert('success', 'تم إعادة الترتيب الافتراضي لتفاصيل الاستعلام');
       });
 
+      const originalPaymentsRows = Array.from(document.querySelectorAll('#paymentsTable tbody tr'));
+      document.getElementById('sortPaymentsNewest')?.addEventListener('click', () => {
+        sortTable('paymentsTable', 0, false);
+      });
+      document.getElementById('sortPaymentsOldest')?.addEventListener('click', () => {
+        sortTable('paymentsTable', 0, true);
+      });
+      document.getElementById('sortPaymentsReset')?.addEventListener('click', () => {
+        const tbody = document.getElementById('paymentsTable').querySelector('tbody');
+        tbody.innerHTML = '';
+        originalPaymentsRows.forEach(r => tbody.appendChild(r));
+        reIndexTable('paymentsTable');
+      });
+
+      document.querySelectorAll('.btn-view-patient-leaves').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const pid = btn.closest('tr').getAttribute('data-id');
+          const tbody = document.querySelector('#leavesTable tbody');
+          Array.from(tbody.querySelectorAll('tr')).forEach(row => {
+            row.style.display = row.getAttribute('data-patient') === pid ? '' : 'none';
+          });
+          showAlert('success', 'تم عرض إجازات المريض');
+        });
+      });
+
       // ==== 40. دوال الفرز بدون إعادة التحميل ==== 
       function sortTable(tableId, columnIdx, asc) {
         const tableBody = document.getElementById(tableId)?.querySelector('tbody');
@@ -2816,6 +3055,29 @@ while ($row = $res->fetch_assoc()) {
       });
       document.getElementById('btn-reset-queries-dates').addEventListener('click', () => {
         resetDateFilter('queriesTable', originalQueriesRows, 'filter_q_from_date', 'filter_q_to_date');
+      });
+
+      document.querySelectorAll('.btn-del-notif').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.getAttribute('data-id');
+          const fd = new FormData();
+          fd.append('action', 'delete_notification');
+          fd.append('notification_id', id);
+          fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
+          fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.parentElement.remove(); }});
+        });
+      });
+
+      document.querySelectorAll('.btn-pay-notif').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const lid = btn.getAttribute('data-leave');
+          const fd = new FormData();
+          fd.append('action', 'mark_leave_paid');
+          fd.append('leave_id', lid);
+          fd.append('amount', 0);
+          fd.append('csrf_token', '<?= $_SESSION["csrf_token"] ?>');
+          fetch('', {method:'POST', body: fd}).then(r=>r.json()).then(res=>{ if(res.success){ btn.closest('li').remove(); }});
+        });
       });
 
     });

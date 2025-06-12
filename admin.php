@@ -873,14 +873,13 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
     }
 
     .stats-box {
-      background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
+      background: var(--primary-color);
       color: #fff;
       border-radius: var(--border-radius);
       padding: 12px 6px;
       text-align: center;
       font-size: 1rem;
-      margin-bottom: 4px;
-      transition: opacity var(--transition-speed);
+      transition: background var(--transition-speed);
       animation: fadeIn 0.5s ease-in-out;
       box-shadow: 0 2px 6px var(--shadow-color);
     }
@@ -1067,10 +1066,6 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       <div class="col stats-box">أرشيف<br><?= $stats['archived'] ?></div>
       <div class="col stats-box">المرضى<br><?= $stats['patients'] ?></div>
       <div class="col stats-box">الأطباء<br><?= $stats['doctors'] ?></div>
-      <div class="col stats-box">مدفوعة<br><?= $stats['paid'] ?></div>
-      <div class="col stats-box">غير مدفوعة<br><?= $stats['unpaid'] ?></div>
-      <div class="col stats-box">إجمالي المدفوعات<br><?= number_format($stats['paid_amount'],2) ?></div>
-      <div class="col stats-box">إجمالي غير المدفوعات<br><?= number_format($stats['unpaid_amount'],2) ?></div>
     </div>
 
     <!-- زر إشعارات المدفوعات -->
@@ -1091,23 +1086,10 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#queriesSection">
         <i class="bi bi-journal-text"></i> سجل الاستعلامات
       </button>
-      <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#paymentsSection">
-        <i class="bi bi-cash"></i> المدفوعات
-      </button>
-      <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#addLeaveSection">
-        <i class="bi bi-plus-circle"></i> إضافة إجازة
-      </button>
-      <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#activeSection">
-        <i class="bi bi-card-list"></i> الإجازات النشطة
-      </button>
-      <button class="btn btn-gradient btn-sm" data-bs-toggle="collapse" data-bs-target="#archivedSection">
-        <i class="bi bi-archive"></i> الأرشيف
-      </button>
     </div>
 
     <!-- بطاقة إضافة إجازة مرضية -->
-    <div class="collapse" id="addLeaveSection">
-    <div class="card card-custom p-3">
+    <div class="card card-custom p-3" id="addLeaveSection">
       <h5>إضافة إجازة مرضية</h5>
       <form id="leaveForm" class="row g-2 align-items-end needs-validation" novalidate>
         <?= csrf_input(); ?>
@@ -1254,11 +1236,9 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
         </div>
       </form>
     </div>
-    </div>
 
     <!-- جدول الإجازات النشطة -->
-    <div class="collapse" id="activeSection">
-    <div class="card card-custom mt-4">
+    <div class="card card-custom mt-4" id="activeSection">
       <div class="card-header d-flex justify-content-between align-items-center"
         style="background: var(--secondary-color); color: #fff; border-radius: var(--border-radius) var(--border-radius) 0 0;">
         <span class="fw-bold">جميع الإجازات المرضية النشطة</span>
@@ -1369,8 +1349,7 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
     </div>
 
     <!-- جدول الأرشيف -->
-    <div class="collapse" id="archivedSection">
-    <div class="card card-custom mt-4 mb-5">
+    <div class="card card-custom mt-4 mb-5" id="archivedSection">
       <div class="card-header d-flex justify-content-between align-items-center"
         style="background: var(--danger-color); color: #fff; border-radius: var(--border-radius) var(--border-radius) 0 0;">
         <span class="fw-bold">الأرشيف (الإجازات المحذوفة)</span>
@@ -1482,8 +1461,7 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           </table>
         </div>
       </div>
-  </div>
-  </div>
+    </div>
 
   <!-- نافذة إشعارات المدفوعات -->
   <div class="modal fade" id="paymentNotifModal" tabindex="-1" aria-hidden="true">
@@ -1517,8 +1495,6 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
         </div>
       </div>
-    </div>
-    </div>
   </div>
 
   <!-- نافذة تأكيد مبلغ الدفع -->
@@ -1640,7 +1616,7 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
   </div>
 
   <!-- قسم المدفوعات -->
-  <div class="collapse" id="paymentsSection">
+  <div id="paymentsSection">
     <div class="card card-custom mt-4 mb-5">
       <div class="card-header d-flex justify-content-between align-items-center" style="background: var(--success-color); color:#fff; border-radius: var(--border-radius) var(--border-radius) 0 0;">
         <span class="fw-bold">إحصائيات المدفوعات</span>
@@ -3164,15 +3140,10 @@ while ($row = $res->fetch_assoc()) { $notifications_payment[] = $row; }
       }
 
       const leaveDetailsModal = new bootstrap.Modal(document.getElementById('leaveDetailsModal'));
-      const activeCollapse = new bootstrap.Collapse(document.getElementById('activeSection'), {toggle:false});
-      const archivedCollapse = new bootstrap.Collapse(document.getElementById('archivedSection'), {toggle:false});
       function showLeaveDetails(id){
         let row = document.querySelector(`#leavesTable tr[data-id="${id}"]`);
-        if(row){
-          activeCollapse.show();
-        } else {
+        if(!row){
           row = document.querySelector(`#archivedTable tr[data-id="${id}"]`);
-          if(row) archivedCollapse.show();
         }
         if(!row) return;
         row.scrollIntoView({behavior:'smooth'});
